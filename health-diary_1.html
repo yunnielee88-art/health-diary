@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="theme-color" content="#2A9D8F"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="건강 다이어리"/>
+<title>건강 다이어리</title>
+<link rel="manifest" href="manifest.json"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Noto Sans KR',system-ui,sans-serif;background:#F4F6FA;-webkit-tap-highlight-color:transparent}
+input,select,textarea,button{font-family:inherit}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#ccc;border-radius:2px}
+#root{height:100vh;display:flex;flex-direction:column}
+.app{height:100%;display:flex;flex-direction:column;overflow:hidden;max-width:540px;margin:0 auto;width:100%}
+.scroll-area{flex:1;overflow-y:auto;padding:0 14px;-webkit-overflow-scrolling:touch}
+.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.badge{border-radius:20px;padding:2px 9px;font-size:11px;font-weight:600}
+.sec-title{font-size:11px;font-weight:700;color:#8892A4;letter-spacing:1px;text-transform:uppercase;margin:16px 0 8px}
+.inp{width:100%;padding:8px 12px;border-radius:8px;border:1.5px solid #E4E9F0;font-size:13px;color:#1B2B4B;outline:none;margin-bottom:10px;background:#fff}
+.btn{border:none;border-radius:9px;cursor:pointer;font-weight:600;font-size:13px;padding:8px 16px;font-family:inherit;-webkit-tap-highlight-color:transparent}
+.btn-primary{background:#2A9D8F;color:#fff}
+.btn-secondary{background:#E4E9F0;color:#1B2B4B}
+.btn-danger{background:#E76F51;color:#fff}
+.btn-ghost{background:transparent;color:#2A9D8F;border:1.5px solid #2A9D8F}
+.btn-green{background:#52B788;color:#fff}
+.btn-amber{background:#E9C46A;color:#7a5c00}
+.btn-full{width:100%}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useRef,useReducer,useEffect}=React;
+const APP_V="1.3.0",SK="hd_v1";
+const MC=["#2A9D8F","#E76F51","#E9C46A","#457B9D","#F4A261","#6A4C93","#52B788","#A8DADC"];
+const AV2=["🧑","👩","👦","👧","👴","👵","🧒","👨"];
+const MEAL_CATS=[{id:"breakfast",label:"아침",icon:"🌅"},{id:"lunch",label:"점심",icon:"☀️"},{id:"dinner",label:"저녁",icon:"🌙"},{id:"snack",label:"간식",icon:"🍪"}];
+const tdy=()=>new Date().toISOString().slice(0,10);
+const uid=()=>Math.random().toString(36).slice(2,9);
+const fmt=(d)=>d?new Date(d+"T00:00:00").toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric",weekday:"short"}):"";
+
+function migrate(r){
+  if(!r)return null;
+  let d={...r},m=false;
+  if(!d._version||d._version<"1.3"){
+    if(d.supplements)Object.keys(d.supplements).forEach(k=>{d.supplements[k]=(d.supplements[k]||[]).map(s=>({isPrescription:false,hospitalRecordId:null,...s}))});
+    if(d.connections)d.connections=(d.connections||[]).map(c=>({canEdit:false,...c}));
+    if(d.logs)Object.keys(d.logs).forEach(mid=>{Object.keys(d.logs[mid]||{}).forEach(dt=>{const lg=d.logs[mid][dt];if(lg.meals)lg.meals=lg.meals.map(ml=>({category:"breakfast",...ml}));})});
+    d._version="1.3.0";m=true;
+  }
+  d._version=APP_V;d._migrated=m;return d;
+}
+const load=()=>{try{return migrate(JSON.parse(localStorage.getItem(SK)))}catch{return null}};
+const persist=(s)=>{try{localStorage.setItem(SK,JSON.stringify({...s,_migrated:undefined}))}catch{}};
+const def=()=>({_version:APP_V,members:[],supplements:{},prescriptions:{},logs:{},connections:[],weeklyReport:{},currentMember:null,viewDate:tdy()});
+
+async function aiCall(msgs,sys){
+  try{
+    const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1200,system:sys,messages:msgs})});
+    const d=await r.json();
+    return d.content?.map(b=>b.text||"").join("")||"분석 실패";
+  }catch(e){return "오류: "+e.message}
+}
+
+const Btn=({onClick,children,cls="btn-primary",disabled,full,style={}})=>(
+  <button onClick={disabled?undefined:onClick} disabled={disabled} className={`btn ${cls}${full?" btn-full":""}`} style={style}>{children}</button>
+);
+const Inp=({label,value,onChange,type="text",ph})=>(
+  <div>{label&&<div style={{fontSize:12,color:"#8892A4",marginBottom:3,fontWeight:600}}>{label}</div>}
+  <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={ph} className="inp"/></div>
+);
+const Sel=({label,value,onChange,opts})=>(
+  <div>{label&&<div style={{fontSize:12,color:"#8892A4",marginBottom:3,fontWeight:600}}>{label}</div>}
+  <select value={value} onChange={e=>onChange(e.target.value)} className="inp" style={{marginBottom:0}}>
+    {opts.map(o=>Array.isArray(o)?<option key={o[0]} value={o[0]}>{o[1]}</option>:<option key={o}>{o}</option>)}
+  </select></div>
+);
+const Txt=({label,value,onChange,ph,rows=2})=>(
+  <div>{label&&<div style={{fontSize:12,color:"#8892A4",marginBottom:3,fontWeight:600}}>{label}</div>}
+  <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={ph} rows={rows} className="inp" style={{resize:"vertical"}}/></div>
+);
+const AiBox=({result,loading,onRun,label,bg="#E6F4F2",btnBg="#2A9D8F",btnCls="btn-primary"})=>(
+  <div style={{background:bg,borderRadius:12,padding:14,marginTop:8}}>
+    <button onClick={onRun} disabled={loading} className={`btn ${btnCls} btn-full`} style={{marginBottom:result||loading?10:0,background:btnBg}}>
+      {loading?"⏳ 분석 중...":"🤖 "+label}
+    </button>
+    {result&&<div style={{fontSize:13,color:"#1B2B4B",lineHeight:1.75,whiteSpace:"pre-wrap"}}>{result}</div>}
+  </div>
+);
+
+function NutritionCard({meal,isAnalyzing,onAnalyze}){
+  const n=meal.nutrition;
+  if(!n)return(
+    <button onClick={onAnalyze} disabled={isAnalyzing} className="btn btn-ghost btn-full" style={{marginTop:8,fontSize:12,padding:"7px"}}>
+      {isAnalyzing?"⏳ 영양 분석 중...":"📊 영양 성분 분석"}
+    </button>
+  );
+  const gradeColor=n.grade==="excellent"?"#52B788":n.grade==="good"?"#2A9D8F":n.grade==="fair"?"#E9C46A":"#E76F51";
+  const gradeLabel=n.grade==="excellent"?"훌륭해요 🎉":n.grade==="good"?"좋아요 👍":n.grade==="fair"?"보통이에요 💬":"개선 필요 ⚠️";
+  return(
+    <div style={{marginTop:10,padding:"12px 14px",background:"#F8FFFE",borderRadius:10,border:"1px solid #E4E9F0"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontWeight:700,fontSize:13}}>📊 영양 분석</div>
+        <span style={{background:gradeColor+"22",color:gradeColor,fontWeight:700,fontSize:12,borderRadius:8,padding:"2px 10px"}}>{gradeLabel}</span>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+        {[["칼로리",n.kcal,"kcal","#E76F51"],["단백질",n.protein,"g","#457B9D"],["탄수화물",n.carb,"g","#E9C46A"],["지방",n.fat,"g","#F4A261"],["당",n.sugar,"g","#E76F51"]].map(([l,v,u,c])=>(
+          <div key={l} style={{background:"#fff",borderRadius:8,padding:"6px 10px",border:"1px solid #E4E9F0",minWidth:68,textAlign:"center"}}>
+            <div style={{fontSize:15,fontWeight:800,color:c}}>{v}<span style={{fontSize:10,fontWeight:400}}>{u}</span></div>
+            <div style={{fontSize:10,color:"#8892A4"}}>{l}</div>
+          </div>
+        ))}
+      </div>
+      {n.fatType&&<div style={{fontSize:12,color:"#4A5568",marginBottom:5,lineHeight:1.5}}>🥑 <strong>지방:</strong> {n.fatType}</div>}
+      {n.proteinType&&<div style={{fontSize:12,color:"#4A5568",marginBottom:5,lineHeight:1.5}}>💪 <strong>단백질:</strong> {n.proteinType}</div>}
+      {n.praise&&<div style={{fontSize:12,color:"#52B788",marginTop:6,lineHeight:1.6,padding:"6px 10px",background:"#EAF3DE",borderRadius:7}}>✅ {n.praise}</div>}
+      {n.improve&&<div style={{fontSize:12,color:"#B8872A",marginTop:6,lineHeight:1.6,padding:"6px 10px",background:"#FDF8E7",borderRadius:7}}>💡 {n.improve}</div>}
+    </div>
+  );
+}
+
+function reducer(s,a){
+  let n={...s};
+  const eLog=(mid,dt)=>{n.logs={...n.logs,[mid]:{...(n.logs[mid]||{}),[dt]:{...(n.logs[mid]?.[dt]||{})}}};return n.logs[mid][dt]};
+  switch(a.type){
+    case"ADD_MBR":n.members=[...n.members,a.m];n.currentMember=a.m.id;break;
+    case"UPD_MBR":n.members=n.members.map(m=>m.id===a.m.id?a.m:m);break;
+    case"SET_MBR":n.currentMember=a.id;break;
+    case"SET_DT":n.viewDate=a.date;break;
+    case"SHF_DT":{const d=new Date(n.viewDate+"T00:00:00");d.setDate(d.getDate()+a.delta);n.viewDate=d.toISOString().slice(0,10);break}
+    case"TOG_SUP":{const{mid,dt,sid}=a,lg=eLog(mid,dt),on=!lg.supChecked?.[sid];lg.supChecked={...lg.supChecked,[sid]:on};n.supplements={...n.supplements,[mid]:(n.supplements[mid]||[]).map(s=>s.id===sid?{...s,currentCount:Math.max(0,s.currentCount+(on?-1:1))}:s)};break}
+    case"ADD_MEAL":{const lg=eLog(a.mid,a.dt);lg.meals=[...(lg.meals||[]),a.meal];break}
+    case"UPD_MEAL_NUTR":{const lg=eLog(a.mid,a.dt);lg.meals=(lg.meals||[]).map(m=>m.id===a.id?{...m,nutrition:a.nutr}:m);break}
+    case"DEL_MEAL":{const lg=eLog(a.mid,a.dt);lg.meals=(lg.meals||[]).filter(m=>m.id!==a.id);break}
+    case"SET_EX":{const lg=eLog(a.mid,a.dt);lg.exercise=a.ex;break}
+    case"SET_EX_AI":{const lg=eLog(a.mid,a.dt);lg.exercise={...(lg.exercise||{}),aiAnalysis:a.txt};break}
+    case"SET_NOTES":{const lg=eLog(a.mid,a.dt);lg.notes=a.notes;break}
+    case"SET_AI_DAY":{const lg=eLog(a.mid,a.dt);lg.aiDaily=a.txt;break}
+    case"SET_WEEKLY":n.weeklyReport={...(n.weeklyReport||{}),[a.mid]:a.txt};break;
+    case"ADD_SUP":n.supplements={...n.supplements,[a.mid]:[...(n.supplements[a.mid]||[]),a.sup]};break;
+    case"UPD_SUP":n.supplements={...n.supplements,[a.mid]:(n.supplements[a.mid]||[]).map(x=>x.id===a.sup.id?{...x,...a.sup}:x)};break;
+    case"DEL_SUP":n.supplements={...n.supplements,[a.mid]:(n.supplements[a.mid]||[]).filter(x=>x.id!==a.sid)};break;
+    case"ADD_PRESC":{n.prescriptions={...n.prescriptions,[a.mid]:[...(n.prescriptions[a.mid]||[]),a.rec]};const ns=(a.rec.medicines||[]).map(med=>({id:uid(),name:med.name,dose:med.dose,unit:med.unit||"정",totalCount:+med.totalCount||30,currentCount:+med.totalCount||30,notes:`처방: ${a.rec.hospital}`,isPrescription:true,hospitalRecordId:a.rec.id}));n.supplements={...n.supplements,[a.mid]:[...(n.supplements[a.mid]||[]),...ns]};break}
+    case"DEL_PRESC":{const rec=(n.prescriptions[a.mid]||[]).find(r=>r.id===a.rid);n.prescriptions={...n.prescriptions,[a.mid]:(n.prescriptions[a.mid]||[]).filter(r=>r.id!==a.rid)};if(rec)n.supplements={...n.supplements,[a.mid]:(n.supplements[a.mid]||[]).filter(x=>x.hospitalRecordId!==a.rid)};break}
+    case"CONNECT":{const ex=n.connections.find(c=>(c.from===a.from&&c.to===a.to)||(c.from===a.to&&c.to===a.from));if(!ex)n.connections=[...n.connections,{from:a.from,to:a.to,canEdit:false}];break}
+    case"TOG_EDIT":n.connections=n.connections.map(c=>((c.from===a.from&&c.to===a.to)||(c.from===a.to&&c.to===a.from))?{...c,canEdit:!c.canEdit}:c);break;
+    case"DISCONN":n.connections=n.connections.filter(c=>!((c.from===a.from&&c.to===a.to)||(c.from===a.to&&c.to===a.from)));break;
+    case"VIEW_AS":n.currentMember=a.id;break;
+  }
+  persist(n);return n;
+}
+
+function Welcome({state,dispatch,migrated}){
+  const [adding,setAdding]=useState(!state.members.length);
+  const [f,setF]=useState({name:"",age:"",gender:"여성",weight:"",height:"",conditions:"",goals:"",color:MC[0],avatar:AV2[0]});
+  const upd=(k,v)=>setF(p=>({...p,[k]:v}));
+  return(
+    <div style={{minHeight:"100vh",background:"#F4F6FA",padding:20,overflowY:"auto"}}>
+      <div style={{maxWidth:480,margin:"0 auto"}}>
+        {migrated&&<div style={{background:"#E6F4F2",border:"1px solid #2A9D8F",borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#2A9D8F",fontWeight:600}}>✅ v{APP_V}으로 업데이트! 기존 데이터 유지됩니다.</div>}
+        <div style={{textAlign:"center",padding:"28px 0 20px"}}>
+          <div style={{fontSize:48,marginBottom:6}}>🌿</div>
+          <h1 style={{fontSize:24,fontWeight:800,color:"#1B2B4B",margin:0}}>건강 다이어리</h1>
+          <p style={{color:"#8892A4",marginTop:5,fontSize:13}}>나만의 건강 기록 · AI 분석 · 지인 연결</p>
+        </div>
+        {state.members.length>0&&<>
+          <div className="sec-title">내 프로필</div>
+          {state.members.map(m=>(
+            <div key={m.id} className="card" onClick={()=>dispatch({type:"SET_MBR",id:m.id})} style={{display:"flex",alignItems:"center",gap:12,cursor:"pointer"}}>
+              <div style={{width:46,height:46,borderRadius:23,background:m.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>{m.avatar}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:15,color:"#1B2B4B"}}>{m.name}</div>
+                <div style={{fontSize:12,color:"#8892A4"}}>{m.age}세 · {m.gender} · {m.weight}kg</div>
+                {m.conditions&&<div style={{fontSize:11,color:"#E76F51",marginTop:1}}>⚠️ {m.conditions}</div>}
+              </div>
+              <div style={{color:m.color,fontSize:20}}>›</div>
+            </div>
+          ))}
+        </>}
+        {!adding
+          ?<button onClick={()=>setAdding(true)} className="btn btn-ghost btn-full" style={{marginTop:8}}>+ 새 프로필 만들기</button>
+          :<div className="card" style={{marginTop:10}}>
+            <div style={{fontWeight:700,fontSize:15,color:"#1B2B4B",marginBottom:14}}>프로필 만들기</div>
+            <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap"}}>{AV2.map(a=><div key={a} onClick={()=>upd("avatar",a)} style={{width:38,height:38,borderRadius:19,background:f.avatar===a?"#2A9D8F33":"#E4E9F0",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:19,border:f.avatar===a?"2px solid #2A9D8F":"2px solid transparent"}}>{a}</div>)}</div>
+            <div style={{display:"flex",gap:5,marginBottom:12,flexWrap:"wrap"}}>{MC.map(c=><div key={c} onClick={()=>upd("color",c)} style={{width:26,height:26,borderRadius:13,background:c,cursor:"pointer",border:f.color===c?"3px solid #333":"3px solid transparent"}}/>)}</div>
+            <Inp label="이름" value={f.name} onChange={v=>upd("name",v)} ph="홍길동"/><div style={{marginBottom:10}}/>
+            <div className="row" style={{marginBottom:10}}><Inp label="나이" type="number" value={f.age} onChange={v=>upd("age",v)}/><Sel label="성별" value={f.gender} onChange={v=>upd("gender",v)} opts={["여성","남성"]}/></div>
+            <div className="row" style={{marginBottom:10}}><Inp label="체중(kg)" type="number" value={f.weight} onChange={v=>upd("weight",v)}/><Inp label="키(cm)" type="number" value={f.height} onChange={v=>upd("height",v)}/></div>
+            <Txt label="건강상태/기저질환" value={f.conditions} onChange={v=>upd("conditions",v)} ph="빈혈, 갑상선..."/><div style={{marginBottom:10}}/>
+            <Txt label="건강 목표" value={f.goals} onChange={v=>upd("goals",v)} ph="체중 감량, 근력 증가..."/><div style={{marginBottom:10}}/>
+            <div className="row">
+              <Btn onClick={()=>{if(!f.name)return;dispatch({type:"ADD_MBR",m:{id:uid(),...f,age:+f.age,weight:+f.weight,height:+f.height}});setAdding(false);}}>저장</Btn>
+              <Btn cls="btn-secondary" onClick={()=>setAdding(false)}>취소</Btn>
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+  );
+}
+
+function ProfEditor({member,dispatch,onClose}){
+  const [f,setF]=useState({...member});const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+    <div style={{background:"#fff",borderRadius:"18px 18px 0 0",padding:20,width:"100%",maxWidth:540,maxHeight:"85vh",overflowY:"auto"}}>
+      <div style={{fontWeight:700,fontSize:16,marginBottom:14}}>⚙️ 프로필 수정</div>
+      <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap"}}>{AV2.map(a=><div key={a} onClick={()=>u("avatar",a)} style={{width:36,height:36,borderRadius:18,background:f.avatar===a?"#2A9D8F33":"#E4E9F0",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:18,border:f.avatar===a?"2px solid #2A9D8F":"2px solid transparent"}}>{a}</div>)}</div>
+      <div style={{display:"flex",gap:5,marginBottom:12,flexWrap:"wrap"}}>{MC.map(c=><div key={c} onClick={()=>u("color",c)} style={{width:24,height:24,borderRadius:12,background:c,cursor:"pointer",border:f.color===c?"3px solid #333":"3px solid transparent"}}/>)}</div>
+      <Inp label="이름" value={f.name} onChange={v=>u("name",v)}/><div style={{marginBottom:10}}/>
+      <div className="row" style={{marginBottom:10}}><Inp label="나이" type="number" value={String(f.age)} onChange={v=>u("age",+v)}/><Sel label="성별" value={f.gender} onChange={v=>u("gender",v)} opts={["여성","남성"]}/></div>
+      <div className="row" style={{marginBottom:10}}><Inp label="체중(kg)" type="number" value={String(f.weight)} onChange={v=>u("weight",+v)}/><Inp label="키(cm)" type="number" value={String(f.height)} onChange={v=>u("height",+v)}/></div>
+      <Txt label="건강상태/기저질환" value={f.conditions||""} onChange={v=>u("conditions",v)}/><div style={{marginBottom:10}}/>
+      <Txt label="건강 목표" value={f.goals||""} onChange={v=>u("goals",v)}/><div style={{marginBottom:10}}/>
+      <div className="row"><Btn onClick={()=>{dispatch({type:"UPD_MBR",m:f});onClose();}}>저장</Btn><Btn cls="btn-secondary" onClick={onClose}>취소</Btn></div>
+    </div>
+  </div>);
+}
+
+function TodayTab({state,dispatch,member}){
+  const mid=member.id,dt=state.viewDate;
+  const lg=state.logs[mid]?.[dt]||{};
+  const sups=state.supplements[mid]||[];
+  const checked=Object.values(lg.supChecked||{}).filter(Boolean).length;
+  const [mDesc,setMDesc]=useState("");
+  const [mPhoto,setMPhoto]=useState(null);
+  const [mCat,setMCat]=useState("breakfast");
+  const [aningMeal,setAningMeal]=useState(null);
+  const [exDesc,setExDesc]=useState("");
+  const [exDur,setExDur]=useState("");
+  const [exInt,setExInt]=useState("중간");
+  const [aningEx,setAningEx]=useState(false);
+  const [exAi,setExAi]=useState("");
+  const [aningDay,setAningDay]=useState(false);
+  const [dayAi,setDayAi]=useState("");
+  const [aningWeek,setAningWeek]=useState(false);
+  const [weekAi,setWeekAi]=useState(state.weeklyReport?.[mid]||"");
+  const [notes,setNotes]=useState("");
+  const pRef=useRef();
+
+  useEffect(()=>{
+    const l=state.logs[mid]?.[dt]||{};
+    setExDesc(l.exercise?.desc||"");setExDur(l.exercise?.duration||"");
+    setExInt(l.exercise?.intensity||"중간");setExAi(l.exercise?.aiAnalysis||"");
+    setDayAi(l.aiDaily||"");setNotes(l.notes||"");
+    setWeekAi(state.weeklyReport?.[mid]||"");
+  },[dt,mid]);
+
+  const sys=`개인 건강 코치 AI. 프로필: ${member.name}, ${member.age}세, ${member.gender}, ${member.weight}kg, ${member.height}cm. 건강상태: ${member.conditions||"없음"} / 목표: ${member.goals||"없음"}. 한국어, 따뜻하고 실용적, 이모지 포함.`;
+
+  const analyzeNutrition=async(meal)=>{
+    setAningMeal(meal.id);
+    const nutrSys=`영양사 AI. JSON만 출력:
+{"kcal":숫자,"protein":숫자,"carb":숫자,"fat":숫자,"sugar":숫자,"fatType":"지방 종류 설명","proteinType":"단백질 종류 설명","grade":"excellent|good|fair|poor","praise":"칭찬문구","improve":"개선권고"}
+숫자=정수. 나이/건강상태 고려. JSON만, 다른 텍스트 없이.`;
+    const content=[];
+    if(meal.photoData)content.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:meal.photoData}});
+    content.push({type:"text",text:`${member.age}세 ${member.gender}, 건강:${member.conditions||"없음"}\n식사(${MEAL_CATS.find(c=>c.id===meal.category)?.label||"식사"}): ${meal.desc||"사진으로 판단"}\nJSON 영양 분석:`});
+    const r=await aiCall([{role:"user",content}],nutrSys);
+    try{const p=JSON.parse(r.replace(/```json|```/g,"").trim());dispatch({type:"UPD_MEAL_NUTR",mid,dt,id:meal.id,nutr:p});}
+    catch{dispatch({type:"UPD_MEAL_NUTR",mid,dt,id:meal.id,nutr:{kcal:0,protein:0,carb:0,fat:0,sugar:0,grade:"fair",improve:r}});}
+    setAningMeal(null);
+  };
+
+  const anEx=async()=>{
+    if(!exDesc)return;setAningEx(true);
+    dispatch({type:"SET_EX",mid,dt,ex:{desc:exDesc,duration:exDur,intensity:exInt}});
+    const r=await aiCall([{role:"user",content:`운동:${exDesc}/${exDur||"?"}분/강도:${exInt}\n1.칼로리 소모\n2.나이/체중 적절성\n3.평가\n4.다음 권장`}],sys);
+    setExAi(r);dispatch({type:"SET_EX_AI",mid,dt,txt:r});setAningEx(false);
+  };
+
+  const anDay=async()=>{
+    setAningDay(true);
+    const sn=sups.filter(s=>lg.supChecked?.[s.id]).map(s=>s.name).join(", ")||"없음";
+    const ms=(lg.meals||[]).map(m=>`[${MEAL_CATS.find(c=>c.id===m.category)?.label}]${m.desc||"사진"}`).join(" / ")||"없음";
+    const lp=(lg.meals||[]).filter(m=>m.photoData).slice(-1)[0]?.photoData;
+    const content=[];
+    if(lp)content.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:lp}});
+    content.push({type:"text",text:`오늘 종합:\n영양제:${sn}\n식사:${ms}\n운동:${exDesc||"없음"} ${exDur?exDur+"분":""}\n메모:${notes||"없음"}\n\n1.✅ 잘한 점\n2.⚡ 보완 필요\n3.💊 영양소\n4.🍽 식단 균형\n5.🏃 운동\n6.💡 내일 팁`});
+    const r=await aiCall([{role:"user",content}],sys);
+    setDayAi(r);dispatch({type:"SET_AI_DAY",mid,dt,txt:r});setAningDay(false);
+  };
+
+  const anWeek=async()=>{
+    setAningWeek(true);
+    const now=new Date(dt+"T00:00:00");
+    const days=Array.from({length:7},(_,i)=>{const d=new Date(now);d.setDate(d.getDate()-(6-i));return d.toISOString().slice(0,10);});
+    const summary=days.map(d=>{
+      const l=state.logs[mid]?.[d]||{};
+      const meals=(l.meals||[]).map(m=>`[${MEAL_CATS.find(c=>c.id===m.category)?.label}]${m.desc||"사진"}`).join(",");
+      const ex=l.exercise?.desc?`${l.exercise.desc} ${l.exercise.duration||""}분`:"없음";
+      const supCnt=Object.values(l.supChecked||{}).filter(Boolean).length;
+      return `${d}: 식사=${meals||"없음"}, 운동=${ex}, 영양제=${supCnt}개`;
+    }).join("\n");
+    const r=await aiCall([{role:"user",content:`[7일 기록]\n${summary}\n\n1.📊 식단 패턴\n2.💪 영양 균형\n3.🏃 운동 규칙성\n4.⭐ 가장 잘한 점\n5.🎯 다음 주 목표 3가지\n6.💊 영양제 성실도`}],sys);
+    setWeekAi(r);dispatch({type:"SET_WEEKLY",mid,txt:r});setAningWeek(false);
+  };
+
+  const addMeal=async()=>{
+    if(!mDesc&&!mPhoto)return;
+    const meal={id:uid(),desc:mDesc,photoUrl:mPhoto?.url,photoData:mPhoto?.data,category:mCat};
+    dispatch({type:"ADD_MEAL",mid,dt,meal});
+    setMDesc("");setMPhoto(null);
+    setTimeout(()=>analyzeNutrition(meal),200);
+  };
+
+  return(
+    <div>
+      <div className="sec-title">영양제·약 체크 {checked}/{sups.length}</div>
+      {sups.length===0
+        ?<div className="card" style={{textAlign:"center",color:"#8892A4",fontSize:13}}>영양제 탭에서 추가해보세요</div>
+        :<div className="card" style={{padding:"8px 14px"}}>
+          {sups.map(s=>{
+            const on=lg.supChecked?.[s.id]||false;
+            return(<div key={s.id} onClick={()=>dispatch({type:"TOG_SUP",mid,dt,sid:s.id})} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid #E4E9F0",cursor:"pointer"}}>
+              <div style={{width:24,height:24,borderRadius:12,border:`2px solid ${on?member.color:"#E4E9F0"}`,background:on?member.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                {on&&<span style={{color:"#fff",fontSize:12}}>✓</span>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:13,color:on?member.color:"#1B2B4B",textDecoration:on?"line-through":"none"}}>{s.isPrescription?"💊":"🌿"} {s.name}</div>
+                <div style={{fontSize:11,color:"#8892A4"}}>{s.dose}{s.unit} · 잔여 {s.currentCount}개{s.isPrescription&&<span style={{color:"#E76F51"}}> · 처방</span>}</div>
+              </div>
+              {s.currentCount<=7&&<span className="badge" style={{background:"#FDF0EC",color:"#E76F51"}}>⚠ 부족</span>}
+            </div>);
+          })}
+        </div>
+      }
+
+      <div className="sec-title">식사 기록</div>
+      {(lg.meals||[]).map((m)=>{
+        const cat=MEAL_CATS.find(c=>c.id===m.category)||MEAL_CATS[0];
+        return(<div key={m.id} className="card" style={{padding:12}}>
+          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+            {m.photoUrl&&<img src={m.photoUrl} style={{width:64,height:64,borderRadius:8,objectFit:"cover",flexShrink:0}}/>}
+            <div style={{flex:1}}>
+              <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
+                <span style={{fontSize:14}}>{cat.icon}</span>
+                <span style={{fontSize:12,fontWeight:700}}>{cat.label}</span>
+              </div>
+              <div style={{fontSize:12,color:"#4A5568"}}>{m.desc||"(사진만)"}</div>
+            </div>
+            <div onClick={()=>dispatch({type:"DEL_MEAL",mid,dt,id:m.id})} style={{cursor:"pointer",color:"#8892A4",flexShrink:0,padding:4}}>✕</div>
+          </div>
+          <NutritionCard meal={m} isAnalyzing={aningMeal===m.id} onAnalyze={()=>analyzeNutrition(m)}/>
+        </div>);
+      })}
+
+      <div className="card" style={{padding:12}}>
+        <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>+ 식사 / 간식 추가</div>
+        <div style={{display:"flex",gap:5,marginBottom:10}}>
+          {MEAL_CATS.map(c=>(
+            <div key={c.id} onClick={()=>setMCat(c.id)} style={{flex:1,textAlign:"center",padding:"7px 4px",borderRadius:8,cursor:"pointer",fontSize:11,fontWeight:mCat===c.id?700:400,background:mCat===c.id?member.color+"22":"#F4F6FA",border:`1.5px solid ${mCat===c.id?member.color:"#E4E9F0"}`,color:mCat===c.id?member.color:"#8892A4"}}>
+              <div style={{fontSize:16,marginBottom:2}}>{c.icon}</div>{c.label}
+            </div>
+          ))}
+        </div>
+        <input type="file" accept="image/*" ref={pRef} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setMPhoto({url:ev.target.result,data:ev.target.result.split(",")[1]});r.readAsDataURL(f);}} style={{display:"none"}}/>
+        {mPhoto&&<img src={mPhoto.url} style={{width:"100%",borderRadius:8,marginBottom:6,maxHeight:140,objectFit:"cover"}}/>}
+        <button onClick={()=>pRef.current.click()} className="btn btn-secondary btn-full" style={{marginBottom:7,fontSize:12}}>📷 사진 추가</button>
+        <Txt value={mDesc} onChange={setMDesc} ph={`${MEAL_CATS.find(c=>c.id===mCat)?.label} 내용 (예: 현미밥, 된장찌개...)`}/><div style={{marginBottom:7}}/>
+        <button onClick={addMeal} className="btn btn-primary btn-full" style={{fontSize:12}}>저장 + 자동 영양 분석 📊</button>
+      </div>
+
+      <div className="sec-title">운동 기록</div>
+      <div className="card">
+        <Txt label="운동 내용" value={exDesc} onChange={setExDesc} ph="걷기, 수영, 헬스..."/><div style={{marginBottom:8}}/>
+        <div className="row" style={{marginBottom:8}}><Inp label="시간(분)" type="number" value={exDur} onChange={setExDur}/><Sel label="강도" value={exInt} onChange={setExInt} opts={["가벼움","중간","힘들었음"]}/></div>
+        <div className="row">
+          <button onClick={()=>dispatch({type:"SET_EX",mid,dt,ex:{desc:exDesc,duration:exDur,intensity:exInt}})} className="btn btn-primary" style={{fontSize:12}}>저장</button>
+          <button onClick={anEx} disabled={aningEx||!exDesc} className="btn btn-ghost" style={{fontSize:12}}>{aningEx?"⏳ 분석 중...":"🤖 운동 AI 분석"}</button>
+        </div>
+        {exAi&&<div style={{fontSize:12,color:"#1B2B4B",lineHeight:1.7,whiteSpace:"pre-wrap",marginTop:10,padding:10,background:"#E6F4F2",borderRadius:8}}>{exAi}</div>}
+      </div>
+
+      <div className="sec-title">오늘 메모</div>
+      <div className="card">
+        <Txt value={notes} onChange={setNotes} ph="컨디션, 수면, 몸 상태..." rows={3}/><div style={{marginBottom:8}}/>
+        <button onClick={()=>dispatch({type:"SET_NOTES",mid,dt,notes})} className="btn btn-primary btn-full" style={{fontSize:12}}>저장</button>
+      </div>
+
+      <div className="sec-title">AI 종합 분석</div>
+      <AiBox result={dayAi} loading={aningDay} onRun={anDay} label="오늘 하루 종합 분석"/>
+
+      <div className="sec-title" style={{marginTop:18}}>📅 주간 식단 리포트</div>
+      <AiBox result={weekAi} loading={aningWeek} onRun={anWeek} label="이번 주 식단 종합 평가" bg="#FDF8E7" btnBg="#B8872A" btnCls="btn-amber"/>
+      <div style={{height:20}}/>
+    </div>
+  );
+}
+
+function SupsTab({state,dispatch,member}){
+  const mid=member.id,all=state.supplements[mid]||[];
+  const sups=all.filter(s=>!s.isPrescription),rx=all.filter(s=>s.isPrescription);
+  const [adding,setAdding]=useState(false),[editId,setEditId]=useState(null);
+  const bl={name:"",dose:"",unit:"mg",totalCount:"60",currentCount:"60",notes:""};
+  const [f,setF]=useState(bl);const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [aiSummary,setAiSummary]=useState(""),[aiWarning,setAiWarning]=useState(""),[aiRecs,setAiRecs]=useState([]),[checkedRecs,setCheckedRecs]=useState({}),[ladv,setLadv]=useState(false);
+
+  const save=()=>{
+    if(!f.name)return;
+    if(editId){dispatch({type:"UPD_SUP",mid,sup:{...f,id:editId,isPrescription:false}});setEditId(null);}
+    else{dispatch({type:"ADD_SUP",mid,sup:{id:uid(),...f,totalCount:+f.totalCount,currentCount:+f.currentCount,isPrescription:false,hospitalRecordId:null}});setAdding(false);}
+    setF(bl);
+  };
+  const getAdv=async()=>{
+    setLadv(true);setAiRecs([]);setCheckedRecs({});setAiSummary("");setAiWarning("");
+    const ls=all.map(s=>`${s.name} ${s.dose}${s.unit}${s.isPrescription?" (처방)":""}`).join(", ")||"없음";
+    const sys=`영양제 전문가. JSON만:
+{"summary":"현재상태","recommendations":[{"name":"영양제명","dose":"숫자","unit":"mg","reason":"이유","priority":"high"}],"warnings":"주의"}
+최대 6개. 이미 복용 중 제외. priority:high/medium/low`;
+    const r=await aiCall([{role:"user",content:`${member.name}(${member.age}세,${member.gender},${member.weight}kg)\n건강:${member.conditions||"없음"}/목표:${member.goals||"없음"}\n복용:${ls}\nJSON 추천:`}],sys);
+    try{const p=JSON.parse(r.replace(/```json|```/g,"").trim());setAiSummary(p.summary||"");setAiRecs(p.recommendations||[]);setAiWarning(p.warnings||"");}
+    catch{setAiSummary(r);}
+    setLadv(false);
+  };
+  const toggleRec=(i)=>setCheckedRecs(p=>({...p,[i]:!p[i]}));
+  const addChecked=()=>{aiRecs.filter((_,i)=>checkedRecs[i]).forEach(rec=>{dispatch({type:"ADD_SUP",mid,sup:{id:uid(),name:rec.name,dose:rec.dose,unit:rec.unit||"mg",totalCount:60,currentCount:60,notes:`AI 추천: ${rec.reason}`,isPrescription:false,hospitalRecordId:null}});});setCheckedRecs({});};
+  const nCk=Object.values(checkedRecs).filter(Boolean).length;
+
+  const SC=({s})=>(
+    <div className="card" style={{padding:"12px 14px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div style={{flex:1}}>
+          <div style={{fontWeight:700,fontSize:13}}>🌿 {s.name}</div>
+          <div style={{fontSize:11,color:"#8892A4",marginTop:1}}>{s.dose}{s.unit} · 잔여 {s.currentCount}/{s.totalCount}</div>
+          {s.notes&&<div style={{fontSize:11,color:"#4A5568",marginTop:2}}>{s.notes}</div>}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+          {s.currentCount<=7&&<span className="badge" style={{background:"#FDF0EC",color:"#E76F51"}}>⚠ {s.currentCount}개</span>}
+          {s.currentCount>7&&s.currentCount<=14&&<span className="badge" style={{background:"#FDF8E7",color:"#B8872A"}}>⚡ {s.currentCount}개</span>}
+          <div style={{display:"flex",gap:5,marginTop:3}}>
+            <button onClick={()=>{setEditId(s.id);setF({name:s.name,dose:s.dose,unit:s.unit,totalCount:String(s.totalCount),currentCount:String(s.currentCount),notes:s.notes||""})}} className="btn btn-secondary" style={{fontSize:11,padding:"4px 10px"}}>수정</button>
+            <button onClick={()=>dispatch({type:"DEL_SUP",mid,sid:s.id})} className="btn btn-danger" style={{fontSize:11,padding:"4px 10px"}}>삭제</button>
+          </div>
+        </div>
+      </div>
+      <div style={{marginTop:7,height:4,background:"#E4E9F0",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(s.currentCount/s.totalCount)*100)}%`,background:s.currentCount<=7?"#E76F51":member.color,borderRadius:2}}/></div>
+    </div>
+  );
+
+  return(
+    <div>
+      {!adding&&!editId&&<button onClick={()=>setAdding(true)} className="btn btn-ghost btn-full" style={{margin:"14px 0 10px"}}>+ 영양제 추가</button>}
+      {(adding||editId)&&<div className="card" style={{marginTop:10}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>{editId?"수정":"새 영양제"}</div>
+        <Inp label="이름" value={f.name} onChange={v=>u("name",v)} ph="비타민D..."/><div style={{marginBottom:10}}/>
+        <div className="row" style={{marginBottom:10}}><Inp label="복용량" value={f.dose} onChange={v=>u("dose",v)}/><Sel label="단위" value={f.unit} onChange={v=>u("unit",v)} opts={["mg","mcg","IU","g","ml","정","캡슐"]}/></div>
+        <div className="row" style={{marginBottom:10}}><Inp label="총 개수" type="number" value={f.totalCount} onChange={v=>u("totalCount",v)}/><Inp label="잔여" type="number" value={f.currentCount} onChange={v=>u("currentCount",v)}/></div>
+        <Txt label="메모" value={f.notes} onChange={v=>u("notes",v)} ph="복용 시간 등..."/><div style={{marginBottom:10}}/>
+        <div className="row"><Btn onClick={save}>저장</Btn><Btn cls="btn-secondary" onClick={()=>{setAdding(false);setEditId(null);setF(bl);}}>취소</Btn></div>
+      </div>}
+      {sups.length>0&&<><div className="sec-title">영양제</div>{sups.map(s=><SC key={s.id} s={s}/>)}</>}
+      {rx.length>0&&<><div className="sec-title">처방약 (병원 연동)</div>
+        {rx.map(s=>(
+          <div key={s.id} className="card" style={{padding:"12px 14px",background:"#FDF8E7"}}>
+            <div style={{fontWeight:700,fontSize:13}}>💊 {s.name}</div>
+            <div style={{fontSize:11,color:"#8892A4"}}>{s.dose}{s.unit} · 잔여 {s.currentCount}/{s.totalCount}</div>
+            <div style={{fontSize:11,color:"#4A5568",marginTop:2}}>{s.notes}</div>
+            {s.currentCount<=7&&<span className="badge" style={{background:"#FDF0EC",color:"#E76F51",marginTop:4,display:"inline-block"}}>⚠ 부족</span>}
+            <div style={{marginTop:7,height:4,background:"#E4E9F0",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(s.currentCount/s.totalCount)*100)}%`,background:s.currentCount<=7?"#E76F51":"#E9C46A",borderRadius:2}}/></div>
+          </div>
+        ))}
+      </>}
+      <div className="sec-title">AI 영양제 추천</div>
+      <div style={{background:"#E6F4F2",borderRadius:14,padding:14}}>
+        <button onClick={getAdv} disabled={ladv} className="btn btn-primary btn-full" style={{marginBottom:(aiSummary||aiRecs.length||ladv)?12:0,background:"#2A9D8F"}}>{ladv?"⏳ 분석 중...":"🤖 나에게 맞는 영양제 추천"}</button>
+        {aiSummary&&<div style={{fontSize:13,color:"#1B2B4B",lineHeight:1.6,marginBottom:aiRecs.length?12:0}}>{aiSummary}</div>}
+        {aiRecs.length>0&&<>
+          <div style={{fontSize:11,fontWeight:700,color:"#8892A4",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>추천 — 체크하고 한번에 추가</div>
+          {aiRecs.map((rec,i)=>{
+            const on=checkedRecs[i]||false,pC=rec.priority==="high"?"#E76F51":rec.priority==="medium"?"#B8872A":"#8892A4";
+            return(<div key={i} onClick={()=>toggleRec(i)} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"11px 12px",marginBottom:8,borderRadius:11,background:on?member.color+"18":"#fff",border:`1.5px solid ${on?member.color:"#E4E9F0"}`,cursor:"pointer"}}>
+              <div style={{width:22,height:22,borderRadius:11,border:`2px solid ${on?member.color:"#E4E9F0"}`,background:on?member.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2}}>{on&&<span style={{color:"#fff",fontSize:12}}>✓</span>}</div>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
+                  <span style={{fontWeight:700,fontSize:13}}>🌿 {rec.name}</span>
+                  <span style={{fontSize:12,color:"#8892A4"}}>{rec.dose}{rec.unit}</span>
+                  <span style={{background:pC+"22",color:pC,fontSize:10,fontWeight:700,borderRadius:6,padding:"1px 7px"}}>{rec.priority==="high"?"필수":rec.priority==="medium"?"권장":"선택"}</span>
+                </div>
+                <div style={{fontSize:12,color:"#4A5568",lineHeight:1.5}}>{rec.reason}</div>
+              </div>
+            </div>);
+          })}
+          {nCk>0&&<button onClick={addChecked} className="btn btn-full" style={{marginTop:4,background:member.color,color:"#fff",fontSize:13,padding:"10px"}}>✅ 선택한 영양제 {nCk}개 내 목록에 추가</button>}
+        </>}
+        {aiWarning&&<div style={{marginTop:12,padding:"8px 12px",background:"#FDF8E7",borderRadius:8,fontSize:12,color:"#B8872A",lineHeight:1.5}}>⚠️ {aiWarning}</div>}
+      </div>
+      <div style={{height:16}}/>
+    </div>
+  );
+}
+
+function HospitalTab({state,dispatch,member}){
+  const mid=member.id,recs=state.prescriptions[mid]||[];
+  const [adding,setAdding]=useState(false);
+  const bl={date:tdy(),hospital:"",doctor:"",diagnosis:"",notes:"",medicines:[]};
+  const [f,setF]=useState(bl);const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [mf,setMf]=useState({name:"",dose:"",unit:"정",totalCount:"30"});
+  return(
+    <div>
+      {!adding&&<button onClick={()=>setAdding(true)} className="btn btn-ghost btn-full" style={{margin:"14px 0 10px"}}>+ 병원 방문 기록</button>}
+      {adding&&<div className="card" style={{marginTop:10}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏥 병원 방문 기록</div>
+        <Inp label="방문 날짜" type="date" value={f.date} onChange={v=>u("date",v)}/><div style={{marginBottom:10}}/>
+        <Inp label="병원명" value={f.hospital} onChange={v=>u("hospital",v)} ph="삼성서울병원"/><div style={{marginBottom:10}}/>
+        <Inp label="담당 의사" value={f.doctor} onChange={v=>u("doctor",v)} ph="김철수 원장님"/><div style={{marginBottom:10}}/>
+        <Txt label="진단명/소견" value={f.diagnosis} onChange={v=>u("diagnosis",v)} ph="고혈압 초기..."/><div style={{marginBottom:10}}/>
+        <Txt label="메모" value={f.notes} onChange={v=>u("notes",v)}/><div style={{marginBottom:10}}/>
+        <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>처방약 목록</div>
+        {f.medicines.map((m,i)=>(
+          <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:"1px solid #E4E9F0"}}>
+            <div style={{flex:1,fontSize:12}}>💊 {m.name} {m.dose}{m.unit} × {m.totalCount}</div>
+            <div onClick={()=>setF(p=>({...p,medicines:p.medicines.filter((_,j)=>j!==i)}))} style={{cursor:"pointer",color:"#8892A4",padding:4}}>✕</div>
+          </div>
+        ))}
+        <div style={{background:"#F4F6FA",borderRadius:8,padding:10,marginTop:8}}>
+          <Inp label="약 이름" value={mf.name} onChange={v=>setMf(p=>({...p,name:v}))} ph="타이레놀"/><div style={{marginBottom:6}}/>
+          <div className="row" style={{marginBottom:6}}>
+            <Inp label="용량" value={mf.dose} onChange={v=>setMf(p=>({...p,dose:v}))} ph="500"/>
+            <Sel label="단위" value={mf.unit} onChange={v=>setMf(p=>({...p,unit:v}))} opts={["mg","정","캡슐","ml"]}/>
+            <Inp label="개수" type="number" value={mf.totalCount} onChange={v=>setMf(p=>({...p,totalCount:v}))}/>
+          </div>
+          <button onClick={()=>{if(!mf.name)return;setF(p=>({...p,medicines:[...p.medicines,{id:uid(),...mf}]}));setMf({name:"",dose:"",unit:"정",totalCount:"30"});}} className="btn btn-ghost btn-full" style={{fontSize:12}}>+ 약 추가</button>
+        </div>
+        <div className="row" style={{marginTop:10}}>
+          <button onClick={()=>{if(!f.hospital)return;dispatch({type:"ADD_PRESC",mid,rec:{id:uid(),...f}});setAdding(false);setF(bl);}} className="btn btn-primary" style={{fontSize:12}}>저장 (영양제 자동 연동)</button>
+          <Btn cls="btn-secondary" onClick={()=>setAdding(false)}>취소</Btn>
+        </div>
+      </div>}
+      {recs.length===0&&!adding&&<div className="card" style={{textAlign:"center",color:"#8892A4",padding:28,fontSize:13}}>병원 방문 기록이 없습니다</div>}
+      {[...recs].sort((a,b)=>b.date.localeCompare(a.date)).map(r=>(
+        <div key={r.id} className="card">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div><div style={{fontSize:11,color:"#8892A4"}}>{fmt(r.date)}</div><div style={{fontWeight:700,fontSize:14,marginTop:2}}>🏥 {r.hospital}</div>{r.doctor&&<div style={{fontSize:12,color:"#8892A4"}}>👨‍⚕️ {r.doctor}</div>}</div>
+            <button onClick={()=>dispatch({type:"DEL_PRESC",mid,rid:r.id})} className="btn btn-danger" style={{fontSize:11,padding:"4px 10px"}}>삭제</button>
+          </div>
+          {r.diagnosis&&<div style={{marginTop:8,padding:"7px 10px",background:"#FDF8E7",borderRadius:7,fontSize:12}}>📋 {r.diagnosis}</div>}
+          {r.medicines?.length>0&&<div style={{marginTop:6,padding:"7px 10px",background:"#E6F4F2",borderRadius:7,fontSize:12}}><div style={{fontWeight:600,marginBottom:3}}>💊 처방약</div>{r.medicines.map(m=><div key={m.id} style={{color:"#4A5568"}}>{m.name} {m.dose}{m.unit} × {m.totalCount}</div>)}</div>}
+          {r.notes&&<div style={{marginTop:6,fontSize:12,color:"#4A5568"}}>📝 {r.notes}</div>}
+        </div>
+      ))}
+      <div style={{height:16}}/>
+    </div>
+  );
+}
+
+function HistoryTab({state,dispatch,member}){
+  const mid=member.id,logs=state.logs[mid]||{},sups=state.supplements[mid]||[];
+  const dates=Object.keys(logs).sort((a,b)=>b.localeCompare(a));
+  return(
+    <div>
+      <div style={{height:14}}/>
+      {dates.length===0&&<div className="card" style={{textAlign:"center",color:"#8892A4",padding:28,fontSize:13}}>아직 기록이 없습니다</div>}
+      {dates.map(d=>{
+        const lg=logs[d],ch=sups.filter(s=>lg.supChecked?.[s.id]),snacks=(lg.meals||[]).filter(m=>m.category==="snack").length;
+        return(<div key={d} className="card" onClick={()=>dispatch({type:"SET_DT",date:d})} style={{cursor:"pointer"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontWeight:700,fontSize:13,color:"#1B2B4B"}}>{fmt(d)}</div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {ch.length>0&&<span className="badge" style={{background:"#E6F4F2",color:"#2A9D8F"}}>💊 {ch.length}</span>}
+              {(lg.meals||[]).length>0&&<span className="badge" style={{background:"#FDF8E7",color:"#B8872A"}}>🍽 {(lg.meals||[]).length}{snacks>0?`(🍪${snacks})`:""}</span>}
+              {lg.exercise?.desc&&<span className="badge" style={{background:member.color+"22",color:member.color}}>🏃</span>}
+              {lg.aiDaily&&<span className="badge" style={{background:"#EAF3DE",color:"#3B6D11"}}>✅ AI</span>}
+            </div>
+          </div>
+          {lg.notes&&<div style={{fontSize:11,color:"#8892A4",marginTop:5}}>{lg.notes.slice(0,60)}{lg.notes.length>60?"...":""}</div>}
+        </div>);
+      })}
+      <div style={{height:16}}/>
+    </div>
+  );
+}
+
+function ConnectTab({state,dispatch,member}){
+  const mid=member.id,[srch,setSrch]=useState("");
+  const myC=state.connections.filter(c=>c.from===mid||c.to===mid);
+  const cIds=myC.map(c=>c.from===mid?c.to:c.from);
+  const cMems=cIds.map(id=>state.members.find(m=>m.id===id)).filter(Boolean);
+  const canEd=(oid)=>{const c=myC.find(c=>(c.from===mid&&c.to===oid)||(c.from===oid&&c.to===mid));return c?.canEdit||false;};
+  const res=state.members.filter(m=>m.id!==mid&&m.name.includes(srch)&&!cIds.includes(m.id));
+  return(
+    <div>
+      <div className="card" style={{background:"#E6F4F2",border:"1px solid #2A9D8F",marginTop:14,marginBottom:6}}>
+        <div style={{fontSize:12,color:"#2A9D8F",lineHeight:1.6}}><strong>🔗 사용자 연결이란?</strong><br/>같은 기기의 다른 사용자와 연결해 기록을 확인하고, 허용하면 대신 입력도 할 수 있어요.</div>
+      </div>
+      <div className="sec-title">연결된 사용자</div>
+      {cMems.length===0?<div className="card" style={{textAlign:"center",color:"#8892A4",fontSize:13}}>연결된 사용자가 없어요</div>
+        :cMems.map(m=>(
+          <div key={m.id} className="card" style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:42,height:42,borderRadius:21,background:m.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{m.avatar}</div>
+            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13}}>{m.name}</div><div style={{fontSize:11,color:"#8892A4"}}>{m.age}세 · {m.gender}</div><div style={{fontSize:11,marginTop:2,color:canEd(m.id)?"#2A9D8F":"#8892A4"}}>{canEd(m.id)?"✏️ 입력 가능":"👁 보기만"}</div></div>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              <button onClick={()=>dispatch({type:"VIEW_AS",id:m.id})} className="btn btn-ghost" style={{fontSize:11,padding:"4px 10px"}}>보기</button>
+              <button onClick={()=>dispatch({type:"TOG_EDIT",from:mid,to:m.id})} className={`btn ${canEd(m.id)?"btn-secondary":"btn-green"}`} style={{fontSize:11,padding:"4px 8px"}}>{canEd(m.id)?"입력 금지":"입력 허용"}</button>
+              <button onClick={()=>dispatch({type:"DISCONN",from:mid,to:m.id})} className="btn btn-danger" style={{fontSize:11,padding:"4px 10px"}}>해제</button>
+            </div>
+          </div>
+        ))
+      }
+      <div className="sec-title">사용자 연결하기</div>
+      <div className="card">
+        <Inp label="이름 검색" value={srch} onChange={setSrch} ph="이름 입력..."/>
+        {srch&&res.length===0&&<div style={{fontSize:12,color:"#8892A4"}}>검색 결과 없음</div>}
+        {res.map(m=>(
+          <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderTop:"1px solid #E4E9F0"}}>
+            <div style={{fontSize:20}}>{m.avatar}</div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{m.name}</div><div style={{fontSize:11,color:"#8892A4"}}>{m.age}세</div></div>
+            <button onClick={()=>{dispatch({type:"CONNECT",from:mid,to:m.id});setSrch("");}} className="btn btn-primary" style={{fontSize:12,padding:"5px 12px"}}>연결</button>
+          </div>
+        ))}
+      </div>
+      <div className="sec-title">전체 사용자 현황</div>
+      {state.members.filter(m=>m.id!==mid).map(m=>{
+        const tl=state.logs[m.id]?.[tdy()]||{},ms=state.supplements[m.id]||[];
+        const ch=Object.values(tl.supChecked||{}).filter(Boolean).length,lw=ms.filter(s=>s.currentCount<=7);
+        return(<div key={m.id} className="card" style={{display:"flex",gap:10,alignItems:"center"}}>
+          <div style={{fontSize:26}}>{m.avatar}</div>
+          <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13}}>{m.name} <span style={{fontWeight:400,fontSize:11,color:"#8892A4"}}>{m.age}세</span></div><div style={{fontSize:11,color:"#8892A4",marginTop:1}}>영양제 {ch}/{ms.length} · 식사 {(tl.meals||[]).length}회</div>{lw.length>0&&<div style={{fontSize:11,color:"#E76F51",marginTop:1}}>⚠️ {lw.map(s=>s.name).join(", ")} 부족</div>}</div>
+        </div>);
+      })}
+      <div style={{height:16}}/>
+    </div>
+  );
+}
+
+function Dashboard({state,dispatch,member}){
+  const [tab,setTab]=useState("today"),[editP,setEditP]=useState(false);
+  const TABS=[{id:"today",l:"오늘",i:"📋"},{id:"supplements",l:"영양제/약",i:"💊"},{id:"hospital",l:"병원",i:"🏥"},{id:"history",l:"기록",i:"📅"},{id:"connect",l:"연결",i:"🔗"}];
+  return(<div className="app">
+    <div style={{background:member.color,padding:"14px 16px 12px",flexShrink:0}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div onClick={()=>dispatch({type:"SET_MBR",id:null})} style={{cursor:"pointer",fontSize:20,color:"#fff",padding:"0 4px"}}>‹</div>
+          <div style={{fontSize:22}}>{member.avatar}</div>
+          <div style={{color:"#fff"}}><div style={{fontWeight:800,fontSize:15}}>{member.name}</div><div style={{fontSize:10,opacity:.85}}>{member.age}세 · {member.gender} · {member.weight}kg</div></div>
+        </div>
+        <div onClick={()=>setEditP(true)} style={{cursor:"pointer",fontSize:20,padding:"0 4px"}}>⚙️</div>
+      </div>
+    </div>
+    <div style={{background:"#fff",borderBottom:"1px solid #E4E9F0",padding:"8px 14px",flexShrink:0}}>
+      <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <div onClick={()=>dispatch({type:"SHF_DT",delta:-1})} style={{cursor:"pointer",padding:"3px 12px",fontSize:18,color:"#2A9D8F"}}>‹</div>
+        <div style={{flex:1,textAlign:"center"}}>
+          <input type="date" value={state.viewDate} onChange={e=>dispatch({type:"SET_DT",date:e.target.value})} style={{border:"none",fontSize:13,fontWeight:700,color:"#1B2B4B",textAlign:"center",background:"transparent",cursor:"pointer",outline:"none",width:"100%"}}/>
+          {state.viewDate!==tdy()&&<div onClick={()=>dispatch({type:"SET_DT",date:tdy()})} style={{fontSize:10,color:"#2A9D8F",cursor:"pointer"}}>오늘로</div>}
+        </div>
+        <div onClick={()=>dispatch({type:"SHF_DT",delta:1})} style={{cursor:"pointer",padding:"3px 12px",fontSize:18,color:"#2A9D8F"}}>›</div>
+      </div>
+    </div>
+    {editP&&<ProfEditor member={member} dispatch={dispatch} onClose={()=>setEditP(false)}/>}
+    <div className="scroll-area">
+      {tab==="today"&&<TodayTab state={state} dispatch={dispatch} member={member}/>}
+      {tab==="supplements"&&<SupsTab state={state} dispatch={dispatch} member={member}/>}
+      {tab==="hospital"&&<HospitalTab state={state} dispatch={dispatch} member={member}/>}
+      {tab==="history"&&<HistoryTab state={state} dispatch={dispatch} member={member}/>}
+      {tab==="connect"&&<ConnectTab state={state} dispatch={dispatch} member={member}/>}
+    </div>
+    <div style={{background:"#fff",borderTop:"1px solid #E4E9F0",display:"flex",flexShrink:0,paddingBottom:"env(safe-area-inset-bottom)"}}>
+      {TABS.map(t=><div key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0",cursor:"pointer",color:tab===t.id?member.color:"#8892A4",fontWeight:tab===t.id?700:400}}><div style={{fontSize:16}}>{t.i}</div><div style={{fontSize:9,marginTop:1}}>{t.l}</div></div>)}
+    </div>
+  </div>);
+}
+
+function App(){
+  const [state,dispatch]=useReducer(reducer,null,()=>load()||def());
+  const member=state.currentMember?state.members.find(m=>m.id===state.currentMember):null;
+  if(!member)return <Welcome state={state} dispatch={dispatch} migrated={state._migrated||false}/>;
+  return <Dashboard state={state} dispatch={dispatch} member={member}/>;
+}
+ReactDOM.render(<App/>,document.getElementById("root"));
+</script>
+</body>
+</html>
